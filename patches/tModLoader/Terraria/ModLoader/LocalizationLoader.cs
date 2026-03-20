@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -19,7 +20,7 @@ public static class LocalizationLoader
 		var lang = LanguageManager.Instance;
 		var gameTipPrefix = $"Mods.{mod.Name}.GameTips.";
 
-		foreach (var (key, _) in LoadTranslations(mod, GameCulture.DefaultCulture)) {
+		foreach (var (key, _) in LoadTranslations(mod.File, GameCulture.DefaultCulture)) {
 			var text = lang.GetOrRegister(key); // adds the key but leaves it untranslated for now.
 
 			if (key.StartsWith(gameTipPrefix))
@@ -31,7 +32,7 @@ public static class LocalizationLoader
 	{
 		var lang = LanguageManager.Instance;
 		foreach (var mod in ModLoader.Mods) {
-			foreach (var (key, value) in LoadTranslations(mod, culture)) {
+			foreach (var (key, value) in LoadTranslations(mod.File, culture)) {
 				lang.GetText(key).SetValue(value); // can only set the value of existing keys. Cannot register new keys.
 			}
 		}
@@ -110,6 +111,15 @@ public static class LocalizationLoader
 		File.Move(langFile, $"{langFile}.legacy", true);
 	}
 
+	[Obsolete($"Use ${nameof(TryGetCultureAndPrefixFromPath)} instead.", error: true)]
+	public static (GameCulture culture, string prefix) GetCultureAndPrefixFromPath(string path)
+	{
+		if (TryGetCultureAndPrefixFromPath(path, out var culture, out string prefix))
+			return (culture, prefix);
+
+		return (GameCulture.DefaultCulture, string.Empty);
+	}
+
 	/// <summary>
 	/// Derives a culture and shared prefix from a localization file path. Prefix will be found after culture, either separated by an underscore or nested in the folder.
 	/// <br/> Some examples:<code>
@@ -120,13 +130,18 @@ public static class LocalizationLoader
 	/// </code>
 	/// </summary>
 	/// <param name="path"></param>
+	/// <param name="culture"></param>
+	/// <param name="prefix"></param>
 	/// <returns></returns>
-	public static (GameCulture culture, string prefix) GetCultureAndPrefixFromPath(string path)
+	#nullable enable
+	public static bool TryGetCultureAndPrefixFromPath(string path, [NotNullWhen(true)] out GameCulture? culture, [NotNullWhen(true)] out string? prefix)
+	#nullable disable
 	{
 		path = Path.ChangeExtension(path, null);
+		path = path.Replace("\\", "/");
 
-		GameCulture culture = null;
-		string prefix = null;
+		culture = null;
+		prefix = null;
 
 		string[] splitByFolder = path.Split("/");
 		foreach (var pathPart in splitByFolder) {
@@ -140,13 +155,16 @@ public static class LocalizationLoader
 				}
 				if (parsedCulture == null && culture != null) {
 					prefix = string.Join("_", splitByUnderscore.Skip(underscoreSplitIndex)); // Some mod names have '_' in them
-					return (culture, prefix);
+					return true;
 				}
 			}
 		}
+
 		if (culture != null) {
-			return (culture, "");
+			prefix = string.Empty;
+			return true;
 		}
+
 		/*
 		string[] split = path.Split("/");
 		for (int index = split.Length - 1; index >= 0; index--) {
@@ -156,34 +174,40 @@ public static class LocalizationLoader
 				return culture;
 		}
 		*/
-		// TODO: Log message warning of localization file erroneously named
-		Logging.tML.Warn($"The localization file {path} doesn't match expected file naming patterns, it will load as English");
 
-		return (GameCulture.DefaultCulture, "");
+		return false;
 	}
 
-	private static List<(string key, string value)> LoadTranslations(Mod mod, GameCulture culture)
+	private static List<(string key, string value)> LoadTranslations(Mod mod, GameCulture culture) => LoadTranslations(mod.File, culture);
+
+	private static List<(string key, string value)> LoadTranslations(TmodFile tModFile, GameCulture culture)
 	{
-		if (mod.File == null)
+		if (tModFile == null)
 			return new();
+
+		var properties = BuildProperties.ReadModFile(tModFile);
+		string sourceFolder = Directory.Exists(properties.modSource) ? properties.modSource : "";
 
 		try {
 			// Flatten JSON into dot separated key and value
 			var flattened = new List<(string, string)>();
 
-			foreach (var translationFile in mod.File.Where(entry => Path.GetExtension(entry.Name) == ".hjson")) {
-				(var fileCulture, string prefix) = GetCultureAndPrefixFromPath(translationFile.Name);
+			foreach (var translationFile in tModFile.Where(entry => Path.GetExtension(entry.Name) == ".hjson")) {
+				if (!TryGetCultureAndPrefixFromPath(translationFile.Name, out var fileCulture, out string prefix))
+					continue;
+
 				if (fileCulture != culture)
 					continue;
 
-				using var stream = mod.File.GetStream(translationFile);
+				using var stream = tModFile.GetStream(translationFile);
 				using var streamReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 
 				string translationFileContents = streamReader.ReadToEnd();
 
-				string modpath = Path.Combine(mod.Name, translationFile.Name).Replace('/', '\\');
-				if (changedFiles.Select(x => Path.Join(x.Mod, x.fileName)).Contains(modpath)) {
-					string path = Path.Combine(ModCompile.ModSourcePath, modpath);
+				string modpath = Path.Combine(tModFile.Name, translationFile.Name).Replace('/', '\\');
+				if (!string.IsNullOrWhiteSpace(sourceFolder) && changedFiles.Select(x => Path.Join(x.Mod, x.fileName).Replace('/', '\\')).Contains(modpath)) {
+					// TODO: we could skip this for GetLocalizationCounts to be more accurate to the entries in the mod itself, but that is not needed since we don't allow publishing on the client if any changedFiles and the command line publish won't detect changedFiles unless hosting.
+					string path = Path.Combine(sourceFolder, translationFile.Name);
 					if (File.Exists(path)) {
 						try {
 							translationFileContents = File.ReadAllText(path);
@@ -199,7 +223,21 @@ public static class LocalizationLoader
 					jsonString = HjsonValue.Parse(translationFileContents).ToString();
 				}
 				catch (Exception e) {
-					throw new Exception($"The localization file \"{translationFile.Name}\" is malformed and failed to load: ", e);
+					string additionalContext = "";
+					if (e is ArgumentException && Regex.Match(e.Message, "At line (\\d+),") is Match { Success: true } match && int.TryParse(match.Groups[1].Value, out int line)) {
+						string[] lines = translationFileContents.Replace("\r", "").Replace("\t", "    ").Split('\n');
+						int start = Math.Max(0, line - 4);
+						int end = Math.Min(lines.Length, line + 3);
+						var linesOutput = new StringBuilder();
+						for (int i = start; i < end; i++) {
+							if (line - 1 == i)
+								linesOutput.Append($"\n{i + 1}[c/ff0000:>" + lines[i] + "]");
+							else
+								linesOutput.Append($"\n{i + 1}:" + lines[i]);
+						}
+						additionalContext = "\nContext:" + linesOutput.ToString();
+					}
+					throw new Exception($"The localization file \"{translationFile.Name}\" is malformed and failed to load:{additionalContext} ", e);
 				}
 
 				// Parse JSON
@@ -240,7 +278,7 @@ public static class LocalizationLoader
 			return flattened;
 		}
 		catch (Exception e) {
-			e.Data["mod"] = mod.Name;
+			e.Data["mod"] = tModFile.Name;
 			throw;
 		}
 	}
@@ -282,6 +320,10 @@ public static class LocalizationLoader
 
 	private static void UpdateLocalizationFilesForMod(Mod mod, string outputPath = null, GameCulture specificCulture = null)
 	{
+		// ModLoaderMod does not exist on disk and is not applicable.
+		if (mod.File == null)
+			return;
+
 		var desiredCultures = new HashSet<GameCulture>();
 		if (specificCulture != null)
 			desiredCultures.Add(specificCulture);
@@ -291,7 +333,7 @@ public static class LocalizationLoader
 		};
 
 		// TODO: Maybe optimize to only recently built?
-		string sourceFolder = outputPath ?? Path.Combine(ModCompile.ModSourcePath, mod.Name);
+		string sourceFolder = outputPath ?? mod.SourceFolder;
 		if (!Directory.Exists(sourceFolder))
 			return;
 
@@ -330,11 +372,13 @@ public static class LocalizationLoader
 		// TODO: This is getting the hjson from the .tmod, should they be coming from Mod Sources? Mod Sources is quicker for organization changes, but usually we rebuild for changes...
 		foreach (var inputMod in mods) {
 			foreach (var translationFile in inputMod.File.Where(entry => Path.GetExtension(entry.Name) == ".hjson")) {
+				if (!TryGetCultureAndPrefixFromPath(translationFile.Name, out var culture, out string prefix))
+					continue;
+
 				using var stream = inputMod.File.GetStream(translationFile);
 				using var streamReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 
 				string translationFileContents = streamReader.ReadToEnd();
-				(var culture, string prefix) = GetCultureAndPrefixFromPath(translationFile.Name);
 				string fixedFileName = translationFile.Name;
 				if (culture == GameCulture.DefaultCulture && !fixedFileName.Contains("en-US")) {
 					fixedFileName = Path.Combine(Path.GetDirectoryName(fixedFileName), "en-US.hjson").Replace("\\", "/");
@@ -392,7 +436,7 @@ public static class LocalizationLoader
 		// Remove duplicates. Only remove string entries. Remove from longest filename.
 		// TODO: could combine comments to remaining entry. Also consider removing empty objects somewhere.
 		var duplicates = baseLocalizationFiles.SelectMany(f => f.Entries).Where(w => w.type == JsonType.String).GroupBy(x => x.key).Where(c => c.Count() > 1).ToDictionary(g => g.Key, g => g.ToList());
-		foreach (var baseLocalizationFile in baseLocalizationFiles.OrderByDescending(x=>x.path.Length)) {
+		foreach (var baseLocalizationFile in baseLocalizationFiles.OrderByDescending(x => x.path.Length)) {
 			var toRemove = new List<LocalizationEntry>();
 			foreach (var entry in baseLocalizationFile.Entries) {
 				if (duplicates.ContainsKey(entry.key)) {
@@ -467,8 +511,10 @@ public static class LocalizationLoader
 			string originalPath = Path.Combine(sourceFolder, name);
 			string newPath = originalPath + ".legacy";
 
-			if (File.Exists(originalPath)) // File might have already been deleted
+			if (File.Exists(originalPath)) { // File might have already been deleted
+				Logging.tML.Warn($"The .hjson file \"{originalPath}\" was detected as a localization file but doesn't match the filename of any of the English template files. The file will be renamed to \"{newPath}\" and its contents will not be loaded. You should update the English template files or move these localization entries to a correctly named file to allow them to load.");
 				File.Move(originalPath, newPath);
+			}
 		}
 
 		// Update LocalizationCounts and optionally TranslationsNeeded.txt
@@ -485,7 +531,7 @@ public static class LocalizationLoader
 			string translationsNeededPath = Path.Combine(sourceFolder, "Localization", "TranslationsNeeded.txt");
 			if (File.Exists(translationsNeededPath)) {
 				int countMaxEntries = localizationCounts.DefaultIfEmpty().Max(x => x.Value);
-				string neededText = string.Join(Environment.NewLine, localizationCounts.OrderBy(x => x.Key.LegacyId).Select(x => $"{x.Key.Name}, {x.Value}/{countMaxEntries}, {(float)x.Value/countMaxEntries:0%}, missing {countMaxEntries - x.Value}")) + Environment.NewLine;
+				string neededText = string.Join(Environment.NewLine, localizationCounts.OrderBy(x => x.Key.LegacyId).Select(x => $"{x.Key.Name}, {x.Value}/{countMaxEntries}, {(float)x.Value / countMaxEntries:0%}, missing {countMaxEntries - x.Value}")) + Environment.NewLine;
 				if (File.ReadAllText(translationsNeededPath).ReplaceLineEndings() != neededText.ReplaceLineEndings()) {
 					File.WriteAllText(translationsNeededPath, neededText);
 				}
@@ -716,7 +762,7 @@ public static class LocalizationLoader
 		file.Entries.Insert(placementIndex, new(key, value, comment));
 	}
 
-	// Generates hjson files for the current culture in 
+	// Generates hjson files for the current culture in
 	internal static bool ExtractLocalizationFiles(string modName)
 	{
 		var dir = Path.Combine(Main.SavePath, "ModLocalization", modName);
@@ -736,20 +782,20 @@ public static class LocalizationLoader
 	}
 
 	private static readonly Dictionary<string, Dictionary<GameCulture, int>> localizationEntriesCounts = new();
-	internal static Dictionary<GameCulture, int> GetLocalizationCounts(Mod mod)
+	internal static Dictionary<GameCulture, int> GetLocalizationCounts(TmodFile tModFile)
 	{
-		if (localizationEntriesCounts.TryGetValue(mod.Name, out var results)) {
+		if (localizationEntriesCounts.TryGetValue(tModFile.Name, out var results)) {
 			return results;
 		}
 
 		results = new Dictionary<GameCulture, int>();
 		foreach (var culture in GameCulture.KnownCultures) {
-			var localizationEntries = LoadTranslations(mod, culture);
+			var localizationEntries = LoadTranslations(tModFile, culture);
 			// Only count only non-"" entries. Also ignore entries that are just substitutions.
 			int countNonTrivialEntries = localizationEntries.Where(x => HasTextThatNeedsLocalization(x.value)).Count();
 			results.Add(culture, countNonTrivialEntries);
 		}
-		localizationEntriesCounts[mod.Name] = results;
+		localizationEntriesCounts[tModFile.Name] = results;
 		return results;
 	}
 
@@ -777,7 +823,11 @@ public static class LocalizationLoader
 		// Add a watcher for each loaded mod that has a corresponding mod sources folder
 		// Don't worry about the mod being local or not, for now. The feature might be useful for even workshop tmod files
 		foreach (var mod in ModLoader.Mods) {
-			string path = Path.Combine(ModCompile.ModSourcePath, mod.Name);
+			// ModLoaderMod does not exist on disk and is not applicable.
+			if (mod.File == null)
+				continue;
+
+			string path = mod.SourceFolder;
 			if (!Directory.Exists(path))
 				continue;
 
@@ -823,6 +873,10 @@ public static class LocalizationLoader
 
 	private static void HandleFileChangedOrRenamed(string modName, string fileName)
 	{
+		// Ignore non-localization files
+		if (!TryGetCultureAndPrefixFromPath(fileName, out _, out _))
+			return;
+
 		watcherCooldown = defaultWatcherCooldown;
 		lock (pendingFiles) {
 			pendingFiles.Add((modName, fileName));

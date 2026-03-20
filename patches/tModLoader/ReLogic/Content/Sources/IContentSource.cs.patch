@@ -1,13 +1,15 @@
 --- src/TerrariaNetCore/ReLogic/Content/Sources/IContentSource.cs
 +++ src/tModLoader/ReLogic/Content/Sources/IContentSource.cs
-@@ -1,5 +_,6 @@
+@@ -1,5 +_,8 @@
++using System;
  using System.Collections.Generic;
++using System.Diagnostics.CodeAnalysis;
  using System.IO;
 +using System.Linq;
  
  namespace ReLogic.Content.Sources;
  
-@@ -7,17 +_,48 @@
+@@ -7,17 +_,57 @@
  {
  	IContentValidator ContentValidator { get; set; }
  
@@ -24,14 +26,14 @@
 +	IEnumerable<string> EnumerateAssets();
 +
 +	/// <summary>
-+	/// Must be threadsafe! 
++	/// Must be threadsafe!
 +	/// </summary>
 +	/// <returns>null if the asset does not exist</returns>
  	string GetExtension(string assetName);
  
 +	//TML: Changed parameter name from 'assetName'.
 +	/// <summary>
-+	/// Must be threadsafe! 
++	/// Must be threadsafe!
 +	/// </summary>
 -	Stream OpenStream(string assetName);
 +	Stream OpenStream(string fullAssetName);
@@ -54,6 +56,15 @@
 +		!Rejections.IsRejected(assetName) && GetExtension(assetName) != null;
 +
 +	// Added by TML.
-+	IEnumerable<string> GetAllAssetsStartingWith(string assetNameStart) =>
-+		EnumerateAssets().Where(s => s.StartsWith(assetNameStart));
++	[Obsolete, SuppressMessage("CodeQuality", "IDE0051:Remove unused private members")]
++	private IEnumerable<string> GetAllAssetsStartingWith(string assetNameStart)
++		=> GetAllAssetsStartingWith(assetNameStart, ignoreCase: false);
++
++	// Added by TML.
++	IEnumerable<string> GetAllAssetsStartingWith(string assetNameStart, bool ignoreCase = false)
++	{
++		var comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
++
++		return EnumerateAssets().Where(s => s.StartsWith(assetNameStart, comparison));
++	}
  }

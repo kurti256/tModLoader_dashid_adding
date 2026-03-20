@@ -1,7 +1,10 @@
 using ReLogic.OS;
+using Steamworks;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Terraria.Localization;
 
@@ -17,9 +20,9 @@ public enum DistributionPlatform
 internal static class InstallVerifier
 {
 	private static string VanillaExe = "Terraria.exe";
-	private const string TerrariaVersion = "1.4.4.9";
+	private const string TerrariaVersion = "1.4.5.6";
 	private static string CheckExe = $"Terraria_v{TerrariaVersion}.exe"; // This should match the hashes. {Main.versionNumber}
-	private static string vanillaExePath;
+	internal static string vanillaExePath; // Only reliable for GOG installs
 
 	public static DistributionPlatform DistributionPlatform;
 
@@ -29,39 +32,55 @@ internal static class InstallVerifier
 	private static byte[] gogHash;
 	private static byte[] steamHash;
 
+	private static bool IsSteamUnsupported = false;
+
 	static InstallVerifier()
 	{
-		if (Platform.IsWindows) {
-			if (IntPtr.Size == 4) {
-				steamAPIPath = "Libraries/Native/Windows32/steam_api.dll";
-				steamAPIHash = ToByteArray("56d9f94d37cb8f03049a1cc3062bffaf");
+		string portableRid = RuntimeInformation.RuntimeIdentifier;
+		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
+			if (RuntimeInformation.ProcessArchitecture == Architecture.X86) {
+				steamAPIPath = "/libsteam_api.dll";
+				steamAPIHash = ToByteArray("6750595142dad4552d0f6f04973a7331");
 			}
 			else {
-				steamAPIPath = "Libraries/Native/Windows/steam_api64.dll";
-				steamAPIHash = ToByteArray("500475b20083ccdc64f12d238cab687a");
+				steamAPIPath = "/steam_api64.dll";
+				steamAPIHash = ToByteArray("3bae3a5ecad22eec751e154f68e09361");
 			}
 
 			vanillaSteamAPI = "steam_api.dll";
-			gogHash = ToByteArray("efccd835e6b54697e05e8a4b72d935cd"); // Don't forget to update CheckExe above
-			steamHash = ToByteArray("4530e0acfa4c789f462addb77b405ccb");
+			gogHash = ToByteArray("18013fe58e2b64be3ed0d7b7161c6800"); // Don't forget to update CheckExe above
+			steamHash = ToByteArray("1ea72236140aafb8737e5664557266c3");
 		}
-		else if (Platform.IsOSX) {
-			steamAPIPath = "Libraries/Native/OSX/libsteam_api64.dylib";
-			steamAPIHash = ToByteArray("801e9bf5e5899a41c5999811d870b1ca");
+		else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
+			portableRid = $"osx";
+			steamAPIPath = "libsteam_api.dylib";
+			steamAPIHash = ToByteArray("b7736b391a8276faccb4c055d515d531");
 			vanillaSteamAPI = "libsteam_api.dylib";
-			gogHash = ToByteArray("da2b740b4c6031df3a8b1f68b40cb82b");
-			steamHash = ToByteArray("4512beef5d7607fa1771c3fdf6cdc712");
+			gogHash = ToByteArray("bac96f0a8b5bf31f64e19dddd89184a7");
+			steamHash = ToByteArray("352f3707864771ce2e51fc299dbf6fcb");
 		}
-		else if (Platform.IsLinux) {
-			steamAPIPath = "Libraries/Native/Linux/libsteam_api64.so";
-			steamAPIHash = ToByteArray("ccdf20f0b2f9abbe1fea8314b9fab096");
+		else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
+			if (RuntimeInformation.ProcessArchitecture == Architecture.Arm64) {
+				IsSteamUnsupported = true;
+				return;
+			}
+
+			portableRid = $"linux-{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}";
+			steamAPIPath = "libsteam_api.so";
+			steamAPIHash = ToByteArray("4b7a8cabaa354fcd25743aabfb4b1366");
 			vanillaSteamAPI = "libsteam_api.so";
-			gogHash = ToByteArray("9db40ef7cd4b37794cfe29e8866bb6b4");
-			steamHash = ToByteArray("2ff21c600897a9485ca5ae645a06202d");
+			gogHash = ToByteArray("0dbf043f8b07e128e124358ff1e32858");
+			steamHash = ToByteArray("15c5b36710fa6d5d911c474e60022df2");
 		}
 		else {
 			ErrorReporting.FatalExit(Language.GetTextValue("tModLoader.UnknownVerificationOS"));
 		}
+
+		var steamworksFolder = typeof(SteamAPI).Assembly.Location;
+		while (!Directory.Exists($"{steamworksFolder}/runtimes"))
+			steamworksFolder = Path.GetDirectoryName(steamworksFolder);
+
+		steamAPIPath = $"{steamworksFolder}/runtimes/{portableRid}/native/{steamAPIPath}";
 	}
 
 	private static bool HashMatchesFile(string path, byte[] hash)
@@ -132,20 +151,30 @@ internal static class InstallVerifier
 
 	private static bool ObtainVanillaExePath(out string vanillaPath, out string exePath)
 	{
+		foreach (var possibleVanillaInstallFolder in GetPossibleVanillaInstallFolders()) {
+			if (CheckForExe(possibleVanillaInstallFolder, out exePath)) {
+				vanillaPath = possibleVanillaInstallFolder;
+				return true;
+			}
+		}
+		vanillaPath = exePath = null;
+		return false;
+	}
+
+	private static IEnumerable<string> GetPossibleVanillaInstallFolders()
+	{
 		// Check if in the same folder somehow.
-		vanillaPath = Directory.GetCurrentDirectory();
-		if (CheckForExe(vanillaPath, out exePath))
-			return true;
+		string vanillaPath = Directory.GetCurrentDirectory();
+		yield return vanillaPath;
 
 		// If .exe not present check parent directory (Nested Manual Install)
 		vanillaPath = Directory.GetParent(vanillaPath).FullName;
-		if (CheckForExe(vanillaPath, out exePath))
-			return true;
+		yield return vanillaPath;
 
 		// If .exe not present, check Terraria directory (Side-by-Side Manual Install)
 		vanillaPath = Path.Combine(vanillaPath, "Terraria");
 		if (Platform.IsOSX) {
-			// GOG installs to /Applications/Terraria.app, Steam installs to /Applications/Terraria/Terraria.app
+			// GOG installs to /Applications/Terraria.app, Steam installs to /Library/Application Support/Steam/steamapps/common/Terraria/Terraria.app
 			// Vanilla .exe files are in /Contents/Resources/, not /Contents/MacOS/
 			if (Directory.Exists("../Terraria/Terraria.app/")) {
 				vanillaPath = "../Terraria/Terraria.app/Contents/Resources/";
@@ -154,8 +183,22 @@ internal static class InstallVerifier
 				vanillaPath = "../Terraria.app/Contents/Resources/";
 			}
 		}
+		yield return vanillaPath;
 
-		return CheckForExe(vanillaPath, out exePath);
+		if (Platform.IsLinux)
+			yield return Path.Combine(vanillaPath, "game"); // GOG+Linux installs exe to Terraria/game/
+
+		// Fallback to default GOG install locations
+		if (Platform.IsWindows) {
+			yield return Path.Combine(@"c:\", "Program Files (x86)", "GOG Galaxy", "Games", "Terraria");
+			yield return Path.Combine(@"c:\", "GOG Games", "Terraria");
+		}
+		else if (Platform.IsLinux) {
+			yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "GOG Games", "Terraria");
+		}
+		else {
+			yield return Path.Combine("/Applications", "Terraria.app", "Contents", "Resources");
+		}
 	}
 
 	private static bool CheckForExe(string vanillaPath, out string exePath)
@@ -173,6 +216,9 @@ internal static class InstallVerifier
 
 	private static void CheckSteam()
 	{
+		if (IsSteamUnsupported)
+			return;
+
 		if (!HashMatchesFile(steamAPIPath, steamAPIHash)) {
 			Utils.OpenToURL("https://terraria.org");
 			ErrorReporting.FatalExit(Language.GetTextValue("tModLoader.SteamAPIHashMismatch"));
@@ -198,7 +244,12 @@ internal static class InstallVerifier
 				ErrorReporting.FatalExit(Language.GetTextValue("tModLoader.TerrariaNotInstalled"));
 				break;
 			case TerrariaSteamClient.LaunchResult.ErrInstallOutOfDate:
+				Utils.OpenToURL("https://github.com/tModLoader/tModLoader/wiki/Basic-tModLoader-Usage-FAQ#terraria-is-out-of-date-or-terraria-is-on-a-legacy-version");
 				ErrorReporting.FatalExit(Language.GetTextValue("tModLoader.TerrariaOutOfDateMessage"));
+				break;
+			case TerrariaSteamClient.LaunchResult.ErrInstallLegacyVersion:
+				Utils.OpenToURL("https://github.com/tModLoader/tModLoader/wiki/Basic-tModLoader-Usage-FAQ#terraria-is-out-of-date-or-terraria-is-on-a-legacy-version");
+				ErrorReporting.FatalExit(Language.GetTextValue("tModLoader.TerrariaLegacyBranchMessage"));
 				break;
 			default:
 				throw new Exception("Unsupported result type: " + result);

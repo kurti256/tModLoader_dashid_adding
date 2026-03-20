@@ -26,10 +26,10 @@ namespace ExampleMod.Content.Pets.ExampleLightPet
 		public ref float AIDashCharge => ref Projectile.ai[1];
 
 		public override void SetStaticDefaults() {
-			Main.projFrames[Projectile.type] = 1;
-			Main.projPet[Projectile.type] = true;
-			ProjectileID.Sets.TrailingMode[Projectile.type] = 2;
-			ProjectileID.Sets.LightPet[Projectile.type] = true;
+			Main.projFrames[Type] = 1;
+			Main.projPet[Type] = true;
+			ProjectileID.Sets.TrailingMode[Type] = 2;
+			ProjectileID.Sets.LightPet[Type] = true;
 		}
 
 		public override void SetDefaults() {
@@ -81,11 +81,9 @@ namespace ExampleMod.Content.Pets.ExampleLightPet
 			}
 
 			// Enumerate
-			for (int i = 0; i < Main.maxNPCs; i++) {
-				var npc = Main.npc[i];
-
-				// Ignore this npc if it's not active, or if it's friendly.
-				if (!npc.active || npc.friendly) {
+			foreach (var npc in Main.ActiveNPCs) {
+				// Ignore this npc if it's friendly.
+				if (npc.friendly) {
 					continue;
 				}
 
@@ -107,7 +105,7 @@ namespace ExampleMod.Content.Pets.ExampleLightPet
 		}
 
 		private void UpdateFading(Player player) {
-			//TODO: Comment and clean this up more.
+			// TODO: Comment and clean this up more.
 
 			var playerCenter = player.Center; // Cache the player's center vector to avoid recalculations.
 

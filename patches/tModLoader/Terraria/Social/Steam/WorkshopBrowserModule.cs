@@ -74,7 +74,7 @@ internal class WorkshopBrowserModule : SocialBrowserModule
 
 	public bool DoesItemNeedUpdate(ModPubId_t modId, LocalMod installed, System.Version webVersion)
 	{
-		if (installed.properties.version < webVersion)
+		if (installed.Version < webVersion)
 			return true;
 
 		if (SteamedWraps.SteamAvailable && SteamedWraps.DoesWorkshopItemNeedUpdate(GetId(modId)))
@@ -92,60 +92,15 @@ internal class WorkshopBrowserModule : SocialBrowserModule
 	public void DownloadItem(ModDownloadItem item, IDownloadProgress uiProgress)
 	{
 		item.UpdateInstallState();
+		if (item.Banned)
+			throw new BannedModException($"Attempted to Download a Banned Mod {item.DisplayName} with ID {item.PublishId}. Aborting...", item.DisplayName, item.PublishId.ToString());
 
 		var publishId = new PublishedFileId_t(ulong.Parse(item.PublishId.m_ModPubId));
 		bool forceUpdate = item.NeedUpdate || !SteamedWraps.IsWorkshopItemInstalled(publishId);
 
 		uiProgress?.DownloadStarted(item.DisplayName);
 		Utils.LogAndConsoleInfoMessage(Language.GetTextValue("tModLoader.BeginDownload", item.DisplayName));
-		SteamedWraps.Download(publishId, uiProgress, forceUpdate);
-
-		// Due to issues with Steam moving files from downloading folder to installed folder,
-		// there can be some latency in detecting it's installed. Fine tune if it's giving issues - Solxan
-		EnsureInstallationComplete(item);
-	}
-
-	public void EnsureInstallationComplete(ModDownloadItem item)
-	{
-		Logging.tML.Info("Validating Installation Has Completed: Step 1 / 2");
-		string workshopFolder = WorkshopHelper.GetWorkshopFolder(ModLoader.Engine.Steam.TMLAppID_t);
-		string itemFolder = Path.Combine(workshopFolder, "content", ModLoader.Engine.Steam.TMLAppID_t.ToString(), item.PublishId.m_ModPubId.ToString());
-
-		// Await for the directory to be made for a new install, and assume all the .tmods are in it once completed
-		for (int i = 0; i < 30; i++) {
-			Thread.Sleep(500);
-
-			if (Directory.Exists(itemFolder))
-				break;
-
-			Logging.tML.Info($"Workshop Folder Missing. Awaiting. Attempt {i} / 20");
-		}
-
-		if (!Directory.Exists(itemFolder))
-			throw new Exception($"Workshop Item {item.DisplayNameClean} Failed to Install during this play session!\n" +
-				$"Please restart the game to resolve.");
-
-		// If this is an update, we also need to check that the new .tmod matches the ModDownloadItem
-		Logging.tML.Info("Validating Installation Has Completed: Step 2 / 2");
-
-		// Cap at waiting for 10 seconds
-		for (int i = 0; i < 20; i++) {
-			Thread.Sleep(500);
-
-			//TODO: GetActivetmod... returns null if workshop folder is empty. Needs Handling added - Solxan
-			var fileName = ModOrganizer.GetActiveTmodInRepo(itemFolder);
-			if (string.IsNullOrEmpty(fileName))
-				continue;
-
-			var modFile = new TmodFile(fileName);
-
-			using (modFile.Open()) {
-				if (modFile.Version == item.Version)
-					return;
-			}
-
-			Logging.tML.Info($"Mod Update Not Received. Awaiting. Attempt {i} / 20");
-		}	
+		new SteamedWraps.ModDownloadInstance().Download(publishId, uiProgress, forceUpdate);
 	}
 
 	// More Info for Items /////////////////////////
@@ -155,6 +110,7 @@ internal class WorkshopBrowserModule : SocialBrowserModule
 
 	/// <summary>
 	/// Assumes Intialize has been run prior to use.
+	/// As of Sept 21, 2025, called exclusively by UI Mod Browser
 	/// </summary>
 	public async IAsyncEnumerable<ModDownloadItem> QueryBrowser(QueryParameters queryParams, [EnumeratorCancellation] CancellationToken token = default)
 	{
@@ -203,6 +159,29 @@ internal class WorkshopBrowserModule : SocialBrowserModule
 			throw new Exception("Unexpected Call of DirectQueryItems while either Steam is not initialized or query parameters.searchModIds is null"); // Should only be called if the above is filled in & Steam is Available.
 
 		return new WorkshopHelper.QueryHelper.AQueryInstance(queryParams).QueryItemsSynchronously(out missingMods);
+	}
+
+	/// <summary>
+	/// This uses the provided modId and retrieves the list of approved mod hashes from ModBrowser.
+	/// Uses Steam Web API as a fall back when Steam API isn't available (such as headless environments)
+	/// </summary>
+	public DeveloperMetadata GetDeveloperMetadataFromModBrowser(ModPubId_t modId)
+	{
+		// Mod Doesn't Exist, return empty hashes
+		if (string.IsNullOrEmpty(modId.m_ModPubId) || string.Equals(modId.m_ModPubId, "0"))
+			return new();
+
+		if (!SteamedWraps.SteamAvailable) {
+			// If Steam Server and Steam Client are both not available, retrieve it via WebAPI
+			var itemDetails = SteamWebWrapper.GetItemMetadata(modId.m_ModPubId);
+
+			return DeveloperMetadata.Deserialize(itemDetails.Metadata);
+		}
+
+		// Mod should Exist, check Mod Browser
+		var items = DirectQueryItems(new QueryParameters() { searchModIds = [modId], queryType = QueryType.SearchDirect, returnDevMetadata = true }, out _);
+
+		return items.FirstOrDefault()?.DevMetadata ?? new();
 	}
 }
 

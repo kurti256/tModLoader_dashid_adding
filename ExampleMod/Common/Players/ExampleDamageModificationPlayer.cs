@@ -100,7 +100,7 @@ namespace ExampleMod.Common.Players
 			}
 			SoundEngine.PlaySound(SoundID.Shatter with { Pitch = 0.5f });
 
-			// The visual and sound effects happen on all clients, but the code below only runs for the dodging player 
+			// The visual and sound effects happen on all clients, but the code below only runs for the dodging player
 			if (Player.whoAmI != Main.myPlayer) {
 				return;
 			}
@@ -129,7 +129,7 @@ namespace ExampleMod.Common.Players
 		}
 
 		public static void SendExampleDodgeMessage(int whoAmI) {
-			// This code is called by both the initial 
+			// This code is called by both the initial
 			ModPacket packet = ModContent.GetInstance<ExampleMod>().GetPacket();
 			packet.Write((byte)ExampleMod.MessageType.ExampleDodge);
 			packet.Write((byte)whoAmI);
@@ -162,9 +162,8 @@ namespace ExampleMod.Common.Players
 		}
 
 		private bool TeammateCanAbsorbDamage() {
-			for (int i = 0; i < Main.maxPlayers; i++) {
-				Player otherPlayer = Main.player[i];
-				if (i != Main.myPlayer && IsAbleToAbsorbDamageForTeammate(otherPlayer, Player.team)) {
+			foreach (var otherPlayer in Main.ActivePlayers) {
+				if (otherPlayer.whoAmI != Main.myPlayer && IsAbleToAbsorbDamageForTeammate(otherPlayer, Player.team)) {
 					return true;
 				}
 			}
@@ -180,7 +179,7 @@ namespace ExampleMod.Common.Players
 				&& player.statLife > player.statLifeMax2 * AbsorbTeamDamageAccessory.DamageAbsorptionAbilityLifeThreshold;
 		}
 
-		// This code finds the closest player wearing AbsorbTeamDamageAccessory. 
+		// This code finds the closest player wearing AbsorbTeamDamageAccessory.
 		private static bool IsClosestShieldWearerInRange(Player player, Vector2 target, int team) {
 			if (!IsAbleToAbsorbDamageForTeammate(player, team)) {
 				return false;
@@ -191,11 +190,10 @@ namespace ExampleMod.Common.Players
 				return false; // player we're out of range, so can't take the hit
 			}
 
-			for (int i = 0; i < Main.maxPlayers; i++) {
-				Player otherPlayer = Main.player[i];
-				if (i != Main.myPlayer && IsAbleToAbsorbDamageForTeammate(otherPlayer, team)) {
+			foreach (var otherPlayer in Main.ActivePlayers) {
+				if (otherPlayer.whoAmI != Main.myPlayer && IsAbleToAbsorbDamageForTeammate(otherPlayer, team)) {
 					float otherPlayerDistance = otherPlayer.Distance(target);
-					if (distance > otherPlayerDistance || (distance == otherPlayerDistance && i < Main.myPlayer)) {
+					if (distance > otherPlayerDistance || (distance == otherPlayerDistance && otherPlayer.whoAmI < Main.myPlayer)) {
 						return false;
 					}
 				}

@@ -3,6 +3,7 @@ using MonoMod.RuntimeDetour;
 using MonoMod.RuntimeDetour.HookGen;
 using MonoMod.Utils;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -78,6 +79,11 @@ public static class MonoModHooks
 			Logging.tML.Debug($"ILHook {StringRep(info.Method.Method)} added by {owner.GetName().Name}");
 		};
 
+		TerrariaHooks.Logging.OnObsoleteHookSubscribed += (MethodBase method, Delegate modded) => {
+			var owner = modded.Method.DeclaringType.Assembly;
+			Logging.tML.Error($"The method {StringRep(method)} is Obsolete. It was hooked by the {StringRep(modded.Method)} method of {owner.GetName().Name}");
+		};
+
 		isInitialized = true;
 	}
 
@@ -107,7 +113,7 @@ public static class MonoModHooks
 
 		foreach (var asm in AssemblyManager.GetModAssemblies(mod.Name)) {
 			if (assemblyDetours.TryGetValue(asm, out var list)) {
-				Logging.tML.Debug($"Unloading {list.ilHooks.Count} IL hooks, {list.detours.Count} detours from {asm.GetName().Name} in {mod.DisplayName}");
+				Logging.tML.Debug($"Unloading {list.ilHooks.Count} IL hooks, {list.detours.Count} detours from {asm.GetName().Name} in {mod.Name}");
 
 				foreach (var detour in list.detours)
 					if (detour.IsApplied)
@@ -125,6 +131,17 @@ public static class MonoModHooks
 		HookEndpointManager.Clear();
 		assemblyDetours.Clear();
 		_hookCache.Clear();
+
+		// #4220 - Mitigation for bugs in reflection cache with mod reloads, and helps with assembly unloading
+		var type = typeof(ReflectionHelper);
+		FieldInfo[] caches = [
+			type.GetField("AssemblyCache", BindingFlags.NonPublic | BindingFlags.Static),
+			type.GetField("AssembliesCache", BindingFlags.NonPublic | BindingFlags.Static),
+			type.GetField("ResolveReflectionCache", BindingFlags.NonPublic | BindingFlags.Static),
+		];
+		foreach (var cache in caches) {
+			((IDictionary)cache.GetValue(null)).Clear();
+		}
 	}
 
 	#region Obsolete HookEndpointManager method replacement
@@ -201,9 +218,13 @@ public static class MonoModHooks
 	/// <param name="il"></param>
 	public static void DumpIL(Mod mod, ILContext il)
 	{
-		string methodName = il.Method.FullName.Replace(':', '_');
+		string methodName = il.Method.FullName.Replace(':', '_').Replace('<', '[').Replace('>', ']');
 		if (methodName.Contains('?')) // MonoMod IL copies are created with mangled names like DMD<Terraria.Player::beeType>?38504011::Terraria.Player::beeType(Terraria.Player)
 			methodName = methodName[(methodName.LastIndexOf('?') + 1)..];
+		methodName = string.Join("_", methodName.Split(Path.GetInvalidFileNameChars())); // Catch any other illegal characters, just in case.
+		int maxFileNameLength = 255 - 4; // Most OS, max filename length is 255, leave room for ".txt".
+		if (methodName.Length > maxFileNameLength)
+			methodName = methodName.Substring(0, maxFileNameLength);
 
 		string filePath = Path.Combine(Logging.LogDir, "ILDumps", mod.Name, methodName + ".txt");
 		string folderPath = Path.GetDirectoryName(filePath);

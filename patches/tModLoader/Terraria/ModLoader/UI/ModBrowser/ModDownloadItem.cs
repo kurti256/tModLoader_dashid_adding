@@ -1,11 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.Xna.Framework;
 using Terraria.ModLoader.Core;
 using Terraria.Social.Base;
-using Terraria.UI.Chat;
 
 namespace Terraria.ModLoader.UI.ModBrowser;
 
@@ -21,6 +18,8 @@ public class ModDownloadItem
 	public readonly string Author;
 	public readonly string ModIconUrl;
 	public readonly DateTime TimeStamp;
+	public readonly bool Banned;
+	public readonly DeveloperMetadata DevMetadata;
 
 	public readonly string ModReferencesBySlug;
 	public readonly ModPubId_t[] ModReferenceByModId;
@@ -37,11 +36,11 @@ public class ModDownloadItem
 
 	public bool IsInstalled => Installed != null;
 
-	public ModDownloadItem(string displayName, string name, Version version, string author, string modReferences, ModSide modSide, string modIconUrl, string publishId, int downloads, int hot, DateTime timeStamp, Version modloaderversion, string homepage, string ownerId, string[] referencesById)
+	public ModDownloadItem(string displayName, string name, Version version, string author, string modReferences, ModSide modSide, string modIconUrl, string publishId, int downloads, int hot, DateTime timeStamp, Version modloaderversion, string homepage, string ownerId, string[] referencesById, bool banned, DeveloperMetadata devMetadata)
 	{
 		ModName = name;
 		DisplayName = displayName;
-		DisplayNameClean = string.Join("", ChatManager.ParseMessage(displayName, Color.White).Where(x => x.GetType() == typeof(TextSnippet)).Select(x => x.Text));
+		DisplayNameClean = Utils.CleanChatTags(displayName);
 		PublishId = new ModPubId_t { m_ModPubId = publishId };
 		OwnerId = ownerId;
 
@@ -56,6 +55,8 @@ public class ModDownloadItem
 		TimeStamp = timeStamp;
 		Version = version;
 		ModloaderVersion = modloaderversion;
+		Banned = banned;
+		DevMetadata = devMetadata;
 	}
 
 	internal void UpdateInstallState()
@@ -80,7 +81,7 @@ public class ModDownloadItem
 		return (ModName, PublishId.m_ModPubId, Version);
 	}
 
-	// Explicit Equals was required due to a bizarre issue where two ModDownloadItems with equal properties 
+	// Explicit Equals was required due to a bizarre issue where two ModDownloadItems with equal properties
 	//	were not found equal in CachedInstalledModDownloadItems.Contains(item). - Solxan 2023-07-29
 	public bool Equals(ModDownloadItem item)
 	{

@@ -31,6 +31,7 @@ namespace ExampleMod.Content.Projectiles
 			Projectile.extraUpdates = 1;
 			Projectile.usesLocalNPCImmunity = true;
 			Projectile.localNPCHitCooldown = -1;
+			Projectile.DamageType = DamageClass.SummonMeleeSpeed;
 			Projectile.WhipSettings.Segments = 10;
 			Projectile.WhipSettings.RangeMultiplier = 1.5f;
 		}
@@ -166,7 +167,6 @@ namespace ExampleMod.Content.Projectiles
 
 			SpriteEffects flip = Projectile.spriteDirection < 0 ? SpriteEffects.None : SpriteEffects.FlipHorizontally;
 
-			Main.instance.LoadProjectile(Type);
 			Texture2D texture = TextureAssets.Projectile[Type].Value;
 
 			Vector2 pos = list[0];
